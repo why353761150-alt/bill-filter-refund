@@ -1,104 +1,121 @@
-# 中国银行信用卡账单处理流水线
+# 信用卡账单退款记录清理工具
 
-> 月度信用卡账单处理自动化：PDF → Excel → 退款清理 → 跨账期分离 → 消费分析
+> 个人中国银行信用卡账单自动化处理：PDF → Excel → 退款清理 → 跨账期分离 → 消费分析
+>
+> 每月跑一次，七步搞定；中间三次人工介入（删候选、标备注、填类别），其余全自动。
 
-## 快速开始
+## 这是什么
 
-### 1. 打开项目
+一个本地跑的 Python 工具，把"中国银行信用卡电子账单"从 PDF 一路处理到"分类消费报表"。
 
-双击 `start_vscode.bat`，会在当前目录打开 VSCode。
+整个流程围绕"**账期**"组织（`YYYY-MM`），每个月一个独立目录，互不干扰。流水线有 7 步，其中 3 步需要你打开 Excel 改几笔数据然后保存——这就是"**人工介入**"，不复杂，每次一分钟左右。
 
-### 2. 安装依赖（首次）
+设计上有一个核心原则：**步骤"是否完成"完全由产物文件决定**。没有隐藏的 `.done` 标记文件，没有需要单独维护的状态数据库。文件在 = 跑过了；文件不在 = 没跑过；想重跑？删文件即可。
 
-VSCode 中按 `` Ctrl+` `` 打开终端，执行：
+## 三种跑法
+
+### 1. 双击 `run_all.bat`（最常用）
+
+第一次运行会自动：
+1. 检查 Python
+2. 创建虚拟环境 `.venv/`
+3. 装依赖（用清华镜像，约 1-3 分钟）
+4. 检查 `.env`（没有就跳过自动下载）
+5. 启动流水线，**在 3 个介入点暂停等你**
+
+之后每次跑都会自动跳过已完成的步骤。
+
+### 2. VSCode 调试（按 F5）
+
+双击 `start_vscode.bat` 打开项目，按 `F5`，在调试面板选"一键全流程"。
+
+### 3. 命令行
 
 ```bash
-python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+python -m bill_pipeline.cli all --interactive    # 全流程
+python -m bill_pipeline.cli status --period 2026-06  # 看进度
+python -m bill_pipeline.cli reset --period 2026-06   # 清空某个账期
 ```
 
-或者直接双击 `run_all.bat`，首次运行会自动创建虚拟环境并安装依赖。
+## 七步流水线
 
-### 3. （可选）配置邮箱自动下载
+| 步骤 | 命令 | 自动 / 介入 | 产物 | 说明 |
+|------|------|------------|------|------|
+| 1. 抓取 | `fetch` | 自动 | `data/input/<账期>/*.pdf` | 从 QQ 邮箱拉账单；本地有 PDF 就跳过 |
+| 2. 解析 | `parse` | 自动 | `data/working/<账期>/中国银行.xlsx` | PDF → Excel |
+| 3. 退款候选 | `match-refunds` | 自动 | `*_退款候选清单.xlsx` | 找出可疑的退款行 |
+| 4. 清理 | `clean` | **介入 ①** | `*_清理结果.xlsx` | 删掉不是退款的行 |
+| 5. 跨账期分离 | `split-cross` | **介入 ②** | `中国银行_最终账单.xlsx` | 标"上期还款"等备注 |
+| 6. 准备输入 | `prepare-input` | 自动 | `分析账单.xlsx` | 提取支出列待你分类 |
+| 7. 分析 | `analyze` | **介入 ③** | `账单分析报告_<账期>.xlsx` | 用 DeepSeek 填类别后生成 |
 
-如果希望自动从邮箱下载账单 PDF：
+## 三次人工介入详解
+
+**介入 ①：删掉不是退款的行**（约 30 秒）
+
+打开 `*_退款候选清单.xlsx`，看"退款候选"sheet。把明显不是退款的行（误判的）整行删掉，保存。
+> 程序会用黄底提醒"这条金额很大，注意看"。
+
+**介入 ②：标注跨账期交易**（约 1-2 分钟）
+
+打开 `*_清理结果.xlsx`，看"剔除退款后账单"sheet。对每一条带黄底（金额 > 200）或备注为空的行，**在"备注"列**填入以下之一：
+
+| 备注关键字 | 含义 |
+|-----------|------|
+| `上期还款` | 本期还了上期账单的钱 |
+| `上期账单退款，已抵扣上期账单还款` | 上期退的款当时抵了上期还款 |
+| `上期账单退款，已抵扣本期账单还款` | 上期退的款抵了本期要还的钱 |
+
+不填就视为"本期消费"，照常计入分析。
+
+> 这一步数据有错的话，最终账单的"本月应还"校验会变红——重看一遍是哪个行标错了。
+
+**介入 ③：消费分类**（约 1-2 分钟）
+
+打开 `分析账单.xlsx`，用 DeepSeek 给每笔消费填"交易类别"列（旅行/娱乐/网购/家居/通勤/通信费/物业/水费/电费/燃气费/待定）。填完保存，跑 analyze 出分类汇总报告。
+
+> 参考提示词见文末。
+
+## 凭据安全
+
+项目**绝不**在代码里写邮箱密码。自动下载需要 `.env`：
 
 ```bash
 copy .env.example .env
+# 然后用文本编辑器打开 .env 填写：
+#   BOC_EMAIL=你的QQ邮箱@qq.com
+#   BOC_AUTH_CODE=你的QQ邮箱授权码
 ```
 
-然后用文本编辑器打开 `.env`，填写：
+`.env` 在 `.gitignore` 里，不会被提交。占位符值会被识别为"未配置"，不会报错，直接跳过下载。
 
-```ini
-BOC_EMAIL=你的QQ邮箱@qq.com
-BOC_AUTH_CODE=你的QQ邮箱授权码
-```
+**不配置也能用**——把 PDF 手动放到 `data\input\<账期>\` 即可。
 
-> 授权码获取：QQ 邮箱 → 设置 → 账户 → POP3/IMAP 服务 → 开启 → 生成授权码
-
-**不配置也不影响使用**，只是不能自动下载，需要手动把 PDF 放入 `data\input\<账期>\`。
-
-### 4. 跑全流程
-
-**方式 A：双击 `run_all.bat`**
-
-- 第一次：会依次跑所有步骤，**在 3 个人工介入点暂停**等你处理
-- 后续：自动跳过已完成的步骤
-
-**方式 B：VSCode 中按 `F5`**
-
-在调试面板选择「一键全流程」→ 按 F5
-
-**方式 C：终端命令行**
+## 想重跑某一步？删它的产物
 
 ```bash
-.venv\Scripts\activate
-python -m bill_pipeline.cli all --interactive
+# 1) 重新跑 跨账期分离
+del data\output\2026-06\中国银行_最终账单.xlsx
+python -m bill_pipeline.cli split-cross --period 2026-06
+
+# 2) 重置整个账期（清空所有产物，目录结构保留）
+python -m bill_pipeline.cli reset --period 2026-06
 ```
 
-### 5. 跑单个步骤
+**原理**：流水线的状态完全由"产物文件存不存在"决定：
 
-```bash
-python -m bill_pipeline.cli fetch            # 下载账单
-python -m bill_pipeline.cli parse            # PDF → Excel
-python -m bill_pipeline.cli match-refunds    # 生成退款候选
-python -m bill_pipeline.cli clean            # 清理账单
-python -m bill_pipeline.cli split-cross      # 分离跨账期
-python -m bill_pipeline.cli prepare-input    # 准备分析输入
-python -m bill_pipeline.cli analyze          # 生成分析报告
-python -m bill_pipeline.cli status           # 查看状态
-python -m bill_pipeline.cli reset            # 重置某账期状态
-```
+| 步骤 | 产物 |
+|------|------|
+| fetch | `data/input/<账期>/*.pdf` |
+| parse | `data/working/<账期>/中国银行.xlsx` |
+| match_refunds | `data/working/<账期>/*_退款候选清单.xlsx` |
+| clean | `data/working/<账期>/*_清理结果.xlsx` |
+| split_cross | `data/output/<账期>/中国银行_最终账单.xlsx` |
+| prepare_input | `data/working/<账期>/分析账单.xlsx` |
+| analyze | `data/output/<账期>/账单分析报告_*.xlsx` |
 
-## 处理流程
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. 抓取账单    (自动)   PDF → data/input/<账期>/            │
-│ 2. 解析 PDF    (自动)   → 中国银行.xlsx                      │
-├─────────────────────────────────────────────────────────────┤
-│ 3. 退款候选    (自动)   → _退款候选清单.xlsx                │
-│    ┌───────────────────────────────────┐                    │
-│    │ ⏸️ 人工介入 ①：打开候选清单，     │ ← 黄行需筛选      │
-│    │   删除不是退款的行                │                    │
-│    └───────────────────────────────────┘                    │
-│ 4. 清理账单    (自动)   → _清理结果.xlsx                    │
-│    ┌───────────────────────────────────┐                    │
-│    │ ⏸️ 人工介入 ②：在"备注"列填写     │                    │
-│    │   跨账期标注                      │                    │
-│    └───────────────────────────────────┘                    │
-│ 5. 跨账期分离  (自动)   → 中国银行_最终账单.xlsx            │
-│    ↳ 大于 200 元的支出自动标黄                              │
-├─────────────────────────────────────────────────────────────┤
-│ 6. 准备输入    (自动)   → 分析账单.xlsx                     │
-│    ┌───────────────────────────────────┐                    │
-│    │ ⏸️ 人工介入 ③：用 DeepSeek 分类   │                    │
-│    │   填"交易类别"列                  │                    │
-│    └───────────────────────────────────┘                    │
-│ 7. 分析报告    (自动)   → 账单分析报告_<账期>.xlsx          │
-└─────────────────────────────────────────────────────────────┘
-```
+`status` 命令会列出每个步骤对应的产物文件名，缺哪个一目了然。
 
 ## 项目结构
 
@@ -118,8 +135,8 @@ g:\project\bill\
 │   ├── email_fetcher.py            # 邮箱下载
 │   ├── pdf_parser.py               # PDF 解析
 │   ├── refund_matcher.py           # 退款候选 + 清理
-│   ├── cross_period.py             # 跨账期分离
-│   ├── analyzer.py                 # 账单分析
+│   ├── cross_period.py             # 跨账期分离 + 校验
+│   ├── analyzer.py                 # 账单分析 + 图表
 │   ├── pipeline.py                 # 流水线编排 + 状态机
 │   └── cli.py                      # 命令行入口
 │
@@ -135,72 +152,50 @@ g:\project\bill\
 
 ### 1. 账期隔离
 
-每个月独立目录，互不干扰：
+每个月一个目录，`data/{input,working,output}/2026-06/` 是 6 月的全部数据。处理 4 月的账单时不会影响 5 月。
 
-- `data/input/2026-04/` 是 4 月原始账单
-- `data/output/2026-05/` 是 5 月最终账单
-- **状态完全由产物决定**：没有隐藏的 `.done` 标记文件
+### 2. 产物驱动
 
-### 2. 产物驱动的状态机
-
-每个步骤"做了什么" = "产出了什么文件"。
-
-| 步骤 | 产物文件 | 含义 |
-|------|----------|------|
-| fetch | `data/input/<账期>/*.pdf` | 账单 PDF |
-| parse | `data/working/<账期>/中国银行.xlsx` | 解析后的原始账单 |
-| match_refunds | `data/working/<账期>/*_退款候选清单.xlsx` | 退款候选清单 |
-| clean | `data/working/<账期>/*_清理结果.xlsx` | 剔除退款后的账单 |
-| split_cross | `data/output/<账期>/中国银行_最终账单.xlsx` | 分离跨账期后的最终账单 |
-| prepare_input | `data/working/<账期>/分析账单.xlsx` | 准备分析的人工分类清单 |
-| analyze | `data/output/<账期>/账单分析报告_*.xlsx` | 分类汇总报告 |
-
-**判断规则**：
-- 步骤的产物已存在 → 该步骤"已完成"，自动跳过
-- 产物不存在 → 该步骤未跑，执行它
-- 人工介入点：跑某一步前，对比"上游产物 mtime"和"本步骤产物 mtime"，如果产物 mtime 更新 → 用户已处理过，放行；否则提示用户去改
-
-### 3. 用户重跑某个步骤
-
-直接把它的产物文件删掉，再跑流水线即可——**不需要任何 .done 标记**：
-
-```bash
-# 重跑 split_cross 步骤
-del data\output\2026-04\中国银行_最终账单.xlsx
-python -m bill_pipeline.cli split-cross --period 2026-04
-
-# 重置整个账期（清空所有产物）
-python -m bill_pipeline.cli reset --period 2026-04
-```
-
-### 4. 幂等性
-
-每个步骤都"安全可重跑"：
-- 已完成的步骤自动跳过
-- 手工保存过的文件不会被代码覆盖（基于 mtime 比较）
-
-### 5. 人工介入检测
-
-通过比较"代码生成时间"和"文件修改时间"判断人工是否处理过：
+状态判断零开销，零隐藏文件。代码里也写得很直白：
 
 ```python
-# pipeline.py 里的判定逻辑
-baseline = min(p.stat().st_mtime for p in upstream_products)  # 上游产物最早 mtime
+# pipeline.py
+def _is_done_by_product(step, period):
+    products = _product_for(step, period)
+    return len(products) > 0 and all(p.exists() for p in products)
+```
+
+`run_all.bat` 也是同样的逻辑——检查 `.deps_installed` 标记是为了避免每次都跑 `pip install`。
+
+### 3. 人工介入的判定
+
+介入点用 mtime 比较判断"用户改没改"：
+
+```python
+# 上游产物里最早一个的 mtime 作为基准
+baseline = min(p.stat().st_mtime for p in upstream_products)
+# 用户改过（产物 mtime 比基准晚）→ 放行
 if product.stat().st_mtime > baseline:
-    # 用户改过了，放行
     return True
 # 否则暂停等用户
 ```
 
-### 6. 凭据安全
+### 4. 跨账期校验
 
-- **绝不**把邮箱密码写入代码
-- 通过 `.env` 读取，`.env` 在 `.gitignore` 中
-- 占位符值会被识别为"未配置"，自动跳过下载
+`split_cross` 跑完会自动校验：
 
-## 消费分类提示词（用于人工介入 ③）
+- **上期欠款校验**：上期还款 + 上期账单退款(抵上期) = 上期欠款余额
+- **本期欠款校验**：最终账单支出 - 上期账单退款(抵本期) = 本期欠款余额
 
-把 `分析账单.xlsx` 的内容发给 DeepSeek，附上以下提示词：
+差值 > 0.01 时"汇总"sheet 里会标红，控制台打 ✗。同时在"最终账单"sheet 末尾加一行 **本月应还 = 支出合计 - 存入合计**（红底白字），打开就看到。
+
+### 5. 凭据安全
+
+不写死在代码里 → `.env` → `.gitignore`。占位符值视为"未配置"，自动跳过下载。
+
+## 消费分类提示词（介入 ③ 用）
+
+把 `分析账单.xlsx` 内容发给 DeepSeek，附上：
 
 ```
 这是我的账单，我要对每笔消费进行分类，旅行，娱乐，网购，家居，
@@ -221,16 +216,23 @@ if product.stat().st_mtime > baseline:
 ## 常见问题
 
 **Q: 跑全流程时中途打断了怎么办？**
-A: 重新跑 `run_all.bat`，已完成步骤会自动跳过。
+A: 重跑 `run_all.bat`，已完成的步骤会自动跳过。
 
 **Q: 某一步出错了想重跑？**
-A: `python -m bill_pipeline.cli reset --period 2026-04` 然后再跑。
+A: 删那一步的产物文件，再跑流水线。详见上面"想重跑某一步"。
+
+**Q: 介入点不暂停、直接退出了？**
+A: 非交互模式下遇到人工介入点会直接退出。加 `--interactive` 参数：
+```bash
+python -m bill_pipeline.cli all --interactive
+```
+或者直接用 `run_all.bat`（默认带 `--interactive`）。
 
 **Q: 大额支出阈值 200 元能改吗？**
-A: 在 `.env` 中加一行 `HIGHLIGHT_THRESHOLD=500`。
+A: 在 `.env` 中加 `HIGHLIGHT_THRESHOLD=500`。
 
 **Q: 换电脑怎么迁移？**
-A: 整个项目目录拷过去即可，无需改任何路径配置（已全用相对路径）。
+A: 整个项目目录拷过去即可，所有路径都是相对的。`run_all.bat` 首次运行会重新建虚拟环境、装依赖。
 
 **Q: 想支持其他银行怎么办？**
 A: 仿照 `pdf_parser.py` 写一个 `xxx_bank_parser.py`，再在 `pipeline.py` 注册新步骤。
@@ -239,11 +241,11 @@ A: 仿照 `pdf_parser.py` 写一个 `xxx_bank_parser.py`，再在 `pipeline.py` 
 
 | 现象 | 原因 | 解决 |
 |------|------|------|
-| `ModuleNotFoundError: No module named 'pdfplumber'` | 依赖没装 | `pip install -r requirements.txt` |
+| `ModuleNotFoundError: No module named 'pdfplumber'` | 依赖没装 | 删 `.deps_installed` 标记后重跑 `run_all.bat` |
 | `找不到 PDF` | PDF 没放进 input 目录 | 把 PDF 放到 `data/input/<账期>/` |
 | `未配置邮箱` | .env 缺失或内容是占位符 | 编辑 `.env` 填入真实凭据 |
-| 跑全流程直接退出 | 非交互模式遇到人工检查点 | 加 `--interactive` 参数 |
-| Excel 打开是乱码 | 系统编码问题 | 用 UTF-8 编码的 CSV 或升级 Excel |
+| 跑全流程直接退出 | 非交互模式遇到人工检查点 | 用 `run_all.bat` 或加 `--interactive` |
+| Excel 打开是乱码 | 系统编码问题 | 用 UTF-8 编码或升级 Excel |
 
 ## 开发说明
 
