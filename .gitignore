@@ -1,0 +1,33 @@
+# 环境变量与敏感信息
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# VSCode（保留配置但忽略用户特定目录）
+.vscode/launch.json
+
+# 临时与中间产物
+data/working/
+data/output/
+*.tmp
+*.bak
+
+# Jupyter（已不再使用，但保留以防历史文件残留）
+.ipynb_checkpoints/
+*.ipynb
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志
+*.log
